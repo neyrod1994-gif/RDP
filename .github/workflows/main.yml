@@ -1,197 +1,76 @@
-name: RDP
+name: RDP Connection
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  setup-rdp:
     runs-on: windows-latest
     timeout-minutes: 20
 
     steps:
-      - name: Configure Core RDP Settings
-        run: |
-          $startTime = Get-Date
-          Write-Host "Iniciando configuración RDP - Tiempo: $startTime"
-          
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+    - name: Configure RDP
+      run: |
+        Write-Host "Configurando RDP..."
+        # Habilitar Escritorio Remoto
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+        # Configurar autenticación
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+        # Configurar firewall
+        netsh advfirewall firewall add rule name="Open RDP Port" dir=in action=allow protocol=TCP localport=3389
+        # Reiniciar servicio
+        Restart-Service -Name "TermService" -Force
+        Write-Host "RDP configurado correctamente"
 
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+    - name: Create User
+      run: |
+        Write-Host "Creando usuario RDP..."
+        $password = "12345678"
+        $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+        # Crear usuario
+        New-LocalUser -Name "RDPUser" -Password $securePassword -AccountNeverExpires
+        # Agregar a grupos administrativos
+        Add-LocalGroupMember -Group "Administrators" -Member "RDPUser"
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
+        Write-Host "Usuario creado: RDPUser / 12345678"
 
-          Restart-Service -Name TermService -Force
-          
-          $elapsed = (Get-Date) - $startTime
-          Write-Host "Configuración RDP completada - Tiempo transcurrido: $($elapsed.TotalSeconds) segundos"
+    - name: Get IP Address
+      run: |
+        Write-Host "Obteniendo dirección IP..."
+        $ip = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1).IPV4Address.IPAddressToString
+        Write-Host "IP de la máquina: $ip"
+        echo "IP_ADDRESS=$ip" >> $env:GITHUB_ENV
 
-      - name: Create RDP User with Fixed Password
-        run: |
-          $startTime = Get-Date
-          Write-Host "Creando usuario RDP - Tiempo: $startTime"
-          
-          # Contraseña fija "12345678"
-          $password = "12345678"
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          
-          # Eliminar usuario si ya existe
-          Remove-LocalUser -Name "RDP" -ErrorAction SilentlyContinue
-          
-          # Crear nuevo usuario
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          # Verificar que el usuario se creó correctamente
-          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
-              Write-Host "✅ Usuario RDP creado exitosamente"
-          } else {
-              Write-Error "❌ Error al crear usuario RDP"
-              exit 1
-          }
-          
-          $elapsed = (Get-Date) - $startTime
-          Write-Host "Usuario RDP creado - Tiempo transcurrido: $($elapsed.TotalSeconds) segundos"
+    - name: Display Connection Info
+      run: |
+        Write-Host "=========================================="
+        Write-Host "         INFORMACIÓN DE CONEXIÓN RDP"
+        Write-Host "=========================================="
+        Write-Host "DIRECCIÓN: $env:IP_ADDRESS"
+        Write-Host "USUARIO: RDPUser"
+        Write-Host "CONTRASEÑA: 12345678"
+        Write-Host "PUERTO: 3389"
+        Write-Host "=========================================="
+        Write-Host "INSTRUCCIONES:"
+        Write-Host "1. Abre 'Conexión a Escritorio Remoto'"
+        Write-Host "2. Ingresa la dirección IP mostrada arriba"
+        Write-Host "3. Usuario: RDPUser"
+        Write-Host "4. Contraseña: 12345678"
+        Write-Host "=========================================="
 
-      - name: Install Tailscale
-        run: |
-          $startTime = Get-Date
-          Write-Host "Instalando Tailscale - Tiempo: $startTime"
-          
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
-          
-          $elapsed = (Get-Date) - $startTime
-          Write-Host "Tailscale instalado - Tiempo transcurrido: $($elapsed.TotalSeconds) segundos"
-
-      - name: Start Tailscale and Get Auth URL
-        run: |
-          $startTime = Get-Date
-          Write-Host "Iniciando autenticación de Tailscale - Tiempo: $startTime"
-          
-          # Iniciar Tailscale sin auth key para obtener URL de autenticación
-          $authResult = & "$env:ProgramFiles\Tailscale\tailscale.exe" up --auth-key="" 2>&1 | Out-String
-          Write-Host "Resultado de Tailscale: $authResult"
-          
-          # Buscar URL de autenticación en el output
-          if ($authResult -match "https://login\.tailscale\.com/a/[^\s]+") {
-              $authUrl = $matches[0]
-              Write-Host "=== AUTENTICACIÓN REQUERIDA ==="
-              Write-Host "Por favor visita esta URL para autenticar:"
-              Write-Host $authUrl
-              Write-Host "==============================="
-              echo "AUTH_URL=$authUrl" >> $env:GITHUB_ENV
-          } else {
-              Write-Host "No se pudo obtener URL de autenticación. Verificando estado..."
-              & "$env:ProgramFiles\Tailscale\tailscale.exe" status
-          }
-          
-          $elapsed = (Get-Date) - $startTime
-          Write-Host "Autenticación iniciada - Tiempo transcurrido: $($elapsed.TotalSeconds) segundos"
-
-      - name: Wait for Manual Authentication
-        run: |
-          Write-Host "=== ESPERANDO AUTENTICACIÓN MANUAL ==="
-          Write-Host "Por favor visita la URL mostrada arriba para autenticar Tailscale"
-          Write-Host "Después de autenticar, Tailscale asignará una IP automáticamente"
-          Write-Host "Este paso esperará hasta 10 minutos por la autenticación..."
-          
-          $waitStart = Get-Date
-          $maxWait = 10 # minutos
-          
-          do {
-              Start-Sleep -Seconds 30
-              $tsStatus = & "$env:ProgramFiles\Tailscale\tailscale.exe" status 2>&1 | Out-String
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>&1
-              
-              $currentTime = Get-Date
-              $minutesWaited = ($currentTime - $waitStart).TotalMinutes
-              
-              Write-Host "[$([math]::Round($minutesWaited, 1)) min] Esperando autenticación..."
-              
-              if ($tsIP -and $tsIP -notmatch "failed" -and $tsIP -notmatch "error" -and $tsIP -notmatch "not found") {
-                  Write-Host "¡Autenticación exitosa! IP asignada: $tsIP"
-                  echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-                  break
-              }
-              
-          } while ($minutesWaited -lt $maxWait)
-          
-          if (-not $env:TAILSCALE_IP) {
-              Write-Host "Tiempo de espera agotado. No se pudo autenticar Tailscale."
-              Write-Host "Puedes intentar ejecutar el workflow nuevamente."
-          }
-
-      - name: Verify RDP Accessibility
-        if: env.TAILSCALE_IP
-        run: |
-          $startTime = Get-Date
-          Write-Host "Verificando accesibilidad RDP - Tiempo: $startTime"
-          
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389 -WarningAction SilentlyContinue
-          if ($testResult.TcpTestSucceeded) {
-              Write-Host "✅ TCP connectivity successful!"
-          } else {
-              Write-Host "❌ TCP connection to RDP port 3389 failed"
-              Write-Host "Verificando estado de Tailscale:"
-              & "$env:ProgramFiles\Tailscale\tailscale.exe" status
-          }
-          
-          $elapsed = (Get-Date) - $startTime
-          Write-Host "Verificación RDP completada - Tiempo transcurrido: $($elapsed.TotalSeconds) segundos"
-
-      - name: Maintain Connection (20 minutos)
-        if: env.TAILSCALE_IP
-        run: |
-          $workflowStart = Get-Date
-          $endTime = $workflowStart.AddMinutes(20)
-          Write-Host "=== INICIANDO SESIÓN RDP ==="
-          Write-Host "Hora de inicio: $workflowStart"
-          Write-Host "Hora de finalización: $endTime"
-          Write-Host "Tiempo total: 20 minutos"
-          Write-Host "Dirección: $env:TAILSCALE_IP"
-          Write-Host "Usuario: RDP"
-          Write-Host "Contraseña: 12345678"
-          Write-Host "============================`n"
-          Write-Host "INSTRUCCIONES RDP:"
-          Write-Host "1. Abre Conexión a Escritorio Remoto"
-          Write-Host "2. Ingresa la IP: $env:TAILSCALE_IP"
-          Write-Host "3. Usuario: RDP"
-          Write-Host "4. Contraseña: 12345678"
-          Write-Host "============================`n"
-          
-          # Mostrar información cada 30 segundos
-          while ((Get-Date) -lt $endTime) {
-              $currentTime = Get-Date
-              $timeElapsed = $currentTime - $workflowStart
-              $timeRemaining = $endTime - $currentTime
-              
-              Write-Host "[$currentTime] RDP Activo - Tiempo transcurrido: $([int]$timeElapsed.TotalMinutes)m $([int]$timeElapsed.Seconds)s - Tiempo restante: $([int]$timeRemaining.TotalMinutes)m $([int]$timeRemaining.Seconds)s"
-              
-              Start-Sleep -Seconds 30
-          }
-          
-          $totalTime = (Get-Date) - $workflowStart
-          Write-Host "=== SESIÓN RDP FINALIZADA ==="
-          Write-Host "Tiempo total de ejecución: $([int]$totalTime.TotalMinutes) minutos $([int]$totalTime.Seconds) segundos"
-          Write-Host "============================="
-
-      - name: Cleanup on Failure
-        if: failure()
-        run: |
-          Write-Host "=== LIMPIEZA POR FALLO ==="
-          Write-Host "El workflow falló. Recomendaciones:"
-          Write-Host "1. Verifica la autenticación de Tailscale"
-          Write-Host "2. Asegúrate de visitar la URL de autenticación"
-          Write-Host "3. La contraseña del RDP es: 12345678"
-          Write-Host "=========================="
+    - name: Wait for 20 minutes
+      run: |
+        $startTime = Get-Date
+        $endTime = $startTime.AddMinutes(20)
+        Write-Host "Manteniendo conexión activa por 20 minutos..."
+        
+        while ((Get-Date) -lt $endTime) {
+            $currentTime = Get-Date
+            $elapsed = $currentTime - $startTime
+            $remaining = $endTime - $currentTime
+            
+            Write-Host "Tiempo transcurrido: $([int]$elapsed.TotalMinutes)m $([int]$elapsed.Seconds)s - Restante: $([int]$remaining.TotalMinutes)m $([int]$remaining.Seconds)s"
+            Start-Sleep -Seconds 30
+        }
+        
+        Write-Host "Tiempo completado. Cerrando conexión..."
