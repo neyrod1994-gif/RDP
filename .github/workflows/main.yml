@@ -35,26 +35,16 @@ jobs:
           $elapsed = (Get-Date) - $startTime
           Write-Host "Configuración RDP completada - Tiempo transcurrido: $($elapsed.TotalSeconds) segundos"
 
-      - name: Create RDP User with Secure Password
+      - name: Create RDP User with Fixed Password
         run: |
           $startTime = Get-Date
           Write-Host "Creando usuario RDP - Tiempo: $startTime"
           
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          # Contraseña fija y sencilla
+          $password = "Password123"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          
+          # Crear usuario RDP
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
@@ -68,6 +58,7 @@ jobs:
           
           $elapsed = (Get-Date) - $startTime
           Write-Host "Usuario RDP creado - Tiempo transcurrido: $($elapsed.TotalSeconds) segundos"
+          Write-Host "Contraseña establecida: $password"
 
       - name: Install Tailscale
         run: |
@@ -138,7 +129,7 @@ jobs:
           Write-Host "Tiempo total: 20 minutos"
           Write-Host "Dirección: $env:TAILSCALE_IP"
           Write-Host "Usuario: RDP"
-          Write-Host "Contraseña: $(echo $env:RDP_CREDS)"
+          Write-Host "Contraseña: Password123"
           Write-Host "============================`n"
           
           # Keep runner active for 20 minutes with countdown
