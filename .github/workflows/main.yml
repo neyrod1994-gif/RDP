@@ -6,14 +6,11 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 40  # Un poco más que 30 para dar margen
 
     steps:
       - name: Configure Core RDP Settings
         run: |
-          $startTime = Get-Date
-          Write-Host "Iniciando configuración RDP - Tiempo: $startTime"
-          
           # Enable Remote Desktop and disable Network Level Authentication (if needed)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
@@ -31,20 +28,24 @@ jobs:
 
           # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
-          
-          $elapsed = (Get-Date) - $startTime
-          Write-Host "Configuración RDP completada - Tiempo transcurrido: $($elapsed.TotalSeconds) segundos"
 
-      - name: Create RDP User with Fixed Password
+      - name: Create RDP User with Secure Password
         run: |
-          $startTime = Get-Date
-          Write-Host "Creando usuario RDP - Tiempo: $startTime"
-          
-          # Contraseña fija y sencilla
-          $password = "Password123"
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)      # A-Z
+              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126)) # Special characters
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          
-          # Crear usuario RDP
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
@@ -55,31 +56,18 @@ jobs:
               Write-Error "User creation failed"
               exit 1
           }
-          
-          $elapsed = (Get-Date) - $startTime
-          Write-Host "Usuario RDP creado - Tiempo transcurrido: $($elapsed.TotalSeconds) segundos"
-          Write-Host "Contraseña establecida: $password"
 
       - name: Install Tailscale
         run: |
-          $startTime = Get-Date
-          Write-Host "Instalando Tailscale - Tiempo: $startTime"
-          
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
           
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
-          
-          $elapsed = (Get-Date) - $startTime
-          Write-Host "Tailscale instalado - Tiempo transcurrido: $($elapsed.TotalSeconds) segundos"
 
       - name: Establish Tailscale Connection
         run: |
-          $startTime = Get-Date
-          Write-Host "Estableciendo conexión Tailscale - Tiempo: $startTime"
-          
           # Bring up Tailscale with the provided auth key and set a unique hostname
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
@@ -97,15 +85,9 @@ jobs:
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          
-          $elapsed = (Get-Date) - $startTime
-          Write-Host "Conexión Tailscale establecida - Tiempo transcurrido: $($elapsed.TotalSeconds) segundos"
-
+      
       - name: Verify RDP Accessibility
         run: |
-          $startTime = Get-Date
-          Write-Host "Verificando accesibilidad RDP - Tiempo: $startTime"
-          
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
           
           # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
@@ -115,36 +97,30 @@ jobs:
               exit 1
           }
           Write-Host "TCP connectivity successful!"
-          
-          $elapsed = (Get-Date) - $startTime
-          Write-Host "Verificación RDP completada - Tiempo transcurrido: $($elapsed.TotalSeconds) segundos"
 
-      - name: Maintain Connection (20 minutos)
+      - name: Maintain Connection for 30 minutes
         run: |
-          $workflowStart = Get-Date
-          $endTime = $workflowStart.AddMinutes(20)
-          Write-Host "=== INICIANDO SESIÓN RDP ==="
-          Write-Host "Hora de inicio: $workflowStart"
-          Write-Host "Hora de finalización: $endTime"
-          Write-Host "Tiempo total: 20 minutos"
-          Write-Host "Dirección: $env:TAILSCALE_IP"
-          Write-Host "Usuario: RDP"
-          Write-Host "Contraseña: Password123"
-          Write-Host "============================`n"
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $(echo $env:RDP_CREDS)"
+          Write-Host "==================`n"
+          Write-Host "This RDP session will automatically terminate in 30 minutes"
           
-          # Keep runner active for 20 minutes with countdown
+          # Countdown timer for 30 minutes
+          $duration = 30 * 60  # 30 minutes in seconds
+          $startTime = Get-Date
+          $endTime = $startTime.AddSeconds($duration)
+          
           while ((Get-Date) -lt $endTime) {
-              $currentTime = Get-Date
-              $timeElapsed = $currentTime - $workflowStart
-              $timeRemaining = $endTime - $currentTime
+              $remaining = $endTime - (Get-Date)
+              $minutes = [math]::Floor($remaining.TotalMinutes)
+              $seconds = $remaining.Seconds
               
-              Write-Host "[$currentTime] RDP Activo - Tiempo transcurrido: $([int]$timeElapsed.TotalMinutes)m $([int]$timeElapsed.Seconds)s - Tiempo restante: $([int]$timeRemaining.TotalMinutes)m $([int]$timeRemaining.Seconds)s"
+              Write-Host "[$(Get-Date)] RDP Active - Time remaining: $minutes minutes $seconds seconds"
               
-              # Sleep for 30 seconds to reduce log spam
+              # Sleep for 30 seconds instead of 5 minutes for more frequent updates
               Start-Sleep -Seconds 30
           }
           
-          $totalTime = (Get-Date) - $workflowStart
-          Write-Host "=== SESIÓN RDP FINALIZADA ==="
-          Write-Host "Tiempo total de ejecución: $([int]$totalTime.TotalMinutes) minutos $([int]$totalTime.Seconds) segundos"
-          Write-Host "============================="
+          Write-Host "30 minutes elapsed. RDP session completed."
